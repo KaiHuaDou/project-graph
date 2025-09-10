@@ -1,4 +1,4 @@
-name: "Release"
+name: Publish Android
 run-name: "v${{ inputs.version }}"
 
 on:
@@ -7,45 +7,21 @@ on:
       version:
         description: "应用版本 (x.y.z)"
         required: true
-      prerelease:
+      include_devtools:
         type: boolean
-        description: "Is pre-release"
-        required: false
-        default: false
-      delete_release:
-        type: boolean
-        description: "删除以前的release"
+        description: "是否包含开发工具"
         required: false
         default: false
 
 jobs:
   build:
-    permissions:
-      contents: write
     uses: ./.github/workflows/publish.yml
     with:
-      android_key_alias: "upload"
-      android_key_path: "upload.jks"
-      app_version: ${{ inputs.version }}
       app_version_android: ${{ inputs.version }}
-      aur_version: ${{ inputs.version }}
-      aur_key_algorithm: "ed25519"
-      aur_package_name: "project-graph-bin"
-      delete_release: ${{ inputs.delete_release }}
-      prerelease: ${{ inputs.prerelease }}
-      release_name: "v${{ inputs.version }}"
-      release_tag: "v${{ inputs.version }}"
-      task_build: "tauri:build"
+      include_devtools: ${{ inputs.include_devtools }}
       task_build_android: "tauri:build:android"
-      turbo_team: "zty012"
     secrets:
-      ANDROID_KEYSTORE: ${{ secrets.ANDROID_RELEASE_KEYSTORE }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_PASSWORD }}
-      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       BUILD_ENV: |
         LR_API_BASE_URL=${{ secrets.ENV_API_BASE_URL }}
         LR_GITHUB_CLIENT_SECRET=${{ secrets.ENV_GITHUB_CLIENT_SECRET }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
