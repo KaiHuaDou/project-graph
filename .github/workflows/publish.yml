@@ -94,4 +94,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: app/src-tauri/gen/android/
+          path: app/src-tauri/target/aarch64-linux-android/*
