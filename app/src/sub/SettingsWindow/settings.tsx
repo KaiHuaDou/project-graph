@@ -190,6 +190,8 @@ const categories = {
       "showBackgroundVerticalLines",
       "showBackgroundDots",
       "showBackgroundCartesian",
+      "isStealthModeEnabled",
+      "stealthModeScopeRadius",
     ],
     node: ["enableTagTextNodesBigDisplay", "showTextNodeBorder"],
     edge: ["lineStyle"],
