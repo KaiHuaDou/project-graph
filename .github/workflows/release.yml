@@ -1,49 +1,77 @@
-name: "Release"
-run-name: "v${{ inputs.version }}"
+name: Android Build
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: "应用版本 (x.y.z)"
-        required: true
-      prerelease:
-        type: boolean
-        description: "Is pre-release"
-        required: false
-        default: false
-      delete_release:
-        type: boolean
-        description: "删除以前的release"
-        required: false
-        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "package.json"
+      - "nx.json"
+      - ".github/workflows/android-build.yml"
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    permissions:
-      contents: write
-    uses: ./.github/workflows/publish.yml
-    with:
-      android_key_alias: "upload"
-      android_key_path: "upload.jks"
-      app_version: ${{ inputs.version }}
-      app_version_android: ${{ inputs.version }}
-      aur_version: ${{ inputs.version }}
-      aur_key_algorithm: "ed25519"
-      aur_package_name: "project-graph-bin"
-      delete_release: ${{ inputs.delete_release }}
-      prerelease: ${{ inputs.prerelease }}
-      release_name: "v${{ inputs.version }}"
-      release_tag: "v${{ inputs.version }}"
-      task_build: build:ci
-      # task_build_android: "tauri:build:android"
-    secrets:
-      ANDROID_KEYSTORE: ${{ secrets.ANDROID_RELEASE_KEYSTORE }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_PASSWORD }}
-      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-      BUILD_ENV: |
-        LR_API_BASE_URL=${{ secrets.ENV_API_BASE_URL }}
-        LR_GITHUB_CLIENT_SECRET=${{ secrets.ENV_GITHUB_CLIENT_SECRET }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: >-
+            tools
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
+            ndk;27.0.12077973
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Initialize Android project if needed
+        run: |
+          if [ ! -d "app/src-tauri/gen/android" ]; then
+            pnpm --filter @graphif/project-graph tauri android init --ci
+          fi
+
+      - name: Build debug APK
+        run: pnpm --filter @graphif/project-graph tauri android build -- --apk --debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-graph-android-apk
+          path: app/src-tauri/gen/android/app/build/outputs/**/*.apk
+          if-no-files-found: error
+          retention-days: 7
