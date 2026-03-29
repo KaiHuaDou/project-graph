@@ -1,35 +1,146 @@
-name: "Nightly"
-run-name: "Nightly ${{ github.run_number }}"
+name: "Build Android 3"
+run-name: "Android Build v${{ inputs.version }}"
 
 on:
-  schedule:
-    - cron: "0 0 * * *"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "App version for Android (e.g., 1.0.0). Cannot be 0.0.0"
+        required: false
+        default: "1.0.0"
+      create_release:
+        type: boolean
+        description: "Create a GitHub Release with the APK"
+        required: false
+        default: false
 
 jobs:
-  build:
+  build-android:
+    name: "Build Android APK"
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
-    uses: ./.github/workflows/publish.yml
-    with:
-      android_key_alias: "upload"
-      android_key_path: "upload.jks"
-      app_version: 0.0.0-nightly.${{ github.run_number }}
-      app_version_android: 0.0.${{ github.run_number }}
-      aur_version: r${{ github.run_number }}
-      aur_key_algorithm: "ed25519"
-      aur_package_name: "project-graph-nightly-bin"
-      delete_release: true
-      prerelease: true
-      release_name: Nightly ${{ inputs.version }}
-      release_tag: nightly
-      task_build: build:ci
-      # task_build_android: build
-      include_devtools: true
-    secrets:
-      ANDROID_KEYSTORE: ${{ secrets.ANDROID_RELEASE_KEYSTORE }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_PASSWORD }}
-      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+    steps:
+      # ── 1. 签出代码 ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. 配置 Node.js / pnpm ───────────────────────────────────────────
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Install Node.js dependencies
+        run: pnpm install
+
+      # ── 3. 构建前端（tauri:build:android 依赖 build 产物）───────────────
+      - name: Build frontend
+        run: pnpm build
+
+      # ── 4. 配置 Rust（含全部 Android 交叉编译 targets）─────────────────
+      - name: Install Rust (stable) with Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: "armv7-linux-androideabi,i686-linux-android,x86_64-linux-android,aarch64-linux-android"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "app/src-tauri -> target"
+
+      # ── 5. 配置 Android 构建环境 ─────────────────────────────────────────
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 27
+        run: sdkmanager "ndk;27.0.11902837"
+
+      # ── 6. 修改 tauri.conf.json 版本号（Android versionCode 不能为 0.0.0）
+      - name: Set app version
+        run: |
+          VERSION="${{ inputs.version || '1.0.0' }}"
+          jq --arg v "$VERSION" '.version = $v' \
+            app/src-tauri/tauri.conf.json > /tmp/tauri.conf.json
+          mv /tmp/tauri.conf.json app/src-tauri/tauri.conf.json
+          echo "Version set to: $VERSION"
+
+      # ── 7. 配置 APK 签名 ─────────────────────────────────────────────────
+      #   - 如提供了 ANDROID_KEYSTORE (base64 的 .jks 文件) 和
+      #     ANDROID_KEYSTORE_PASSWORD，则使用真实签名。
+      #   - 否则自动生成临时 keystore 用于 CI 验证构建是否通过。
+      - name: Setup Android APK Signing
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "✅ Configuring release signing with provided keystore..."
+            cd app/src-tauri/gen/android
+            # keystore.properties 必须位于 Android 根项目目录
+            cat > keystore.properties <<EOF
+          password=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=upload
+          storeFile=upload.jks
+          EOF
+            # 解码 base64 keystore 到 app/ 子目录（Gradle file() 相对于 app 模块）
+            echo "$ANDROID_KEYSTORE" | base64 --decode > app/upload.jks
+            echo "Signing configured successfully."
+          else
+            echo "::warning::ANDROID_KEYSTORE / ANDROID_KEYSTORE_PASSWORD not set."
+            echo "::warning::Generating a temporary self-signed keystore for CI validation."
+            keytool -genkey -v \
+              -keystore /tmp/ci-keystore.jks \
+              -alias upload \
+              -keyalg RSA -keysize 2048 -validity 365 \
+              -storepass android -keypass android \
+              -dname "CN=CI Build, OU=CI, O=ProjectGraph, L=CI, S=CI, C=US"
+            cd app/src-tauri/gen/android
+            cat > keystore.properties <<EOF
+          password=android
+          keyAlias=upload
+          storeFile=upload.jks
+          EOF
+            cp /tmp/ci-keystore.jks app/upload.jks
+            echo "Temporary CI keystore configured (NOT for distribution)."
+          fi
+
+      # ── 8. 构建 Android APK ───────────────────────────────────────────────
+      - name: Build Android APK
+        run: pnpm turbo run tauri:build:android
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.11902837
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 9. 上传 APK 为 GitHub Actions Artifact ───────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "project-graph-android-${{ inputs.version || '1.0.0' }}"
+          path: "app/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk"
+          if-no-files-found: error
+
+      # ── 10. （可选）创建 GitHub Release 并附带 APK ───────────────────────
+      - name: Create GitHub Release
+        if: ${{ inputs.create_release == true }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="android-v${{ inputs.version }}"
+          gh release create "$TAG" \
+            --title "Android v${{ inputs.version }}" \
+            --notes "Android APK for version ${{ inputs.version }}" \
+            app/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
